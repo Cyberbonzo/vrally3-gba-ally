@@ -1,0 +1,1357 @@
+diff --git a/crates/gba-core/src/mem.rs b/crates/gba-core/src/mem.rs
+index d0f9e23..4de7f86 100644
+--- a/crates/gba-core/src/mem.rs
++++ b/crates/gba-core/src/mem.rs
+@@ -158,6 +158,8 @@ pub struct MemMap {
+ 
+     /// 240×160 RGB555 output, written per scanline by the PPU.
+     pub framebuffer: Vec<u16>,
++    pub frame_display_control: u16,
++    pub frame_backdrop: [u16; VISIBLE_SCANLINES as usize],
+     /// Affine BG reference-point accumulators (bg2x, bg2y, bg3x, bg3y),
+     /// 19.8 fixed point. Latched from BG2X.. at frame start and whenever
+     /// the game writes them; stepped by PB/PD each scanline.
+@@ -278,6 +280,8 @@ impl MemMap {
+             frame_ready: false,
+             frames: 0,
+             framebuffer: vec![0; VISIBLE_WIDTH * VISIBLE_SCANLINES as usize],
++            frame_display_control: 0,
++            frame_backdrop: [0; VISIBLE_SCANLINES as usize],
+             aff_ref: [0; 4],
+             aff_dirty: [true; 2],
+             unhandled_swis: 0,
+diff --git a/crates/gba-core/src/ppu.rs b/crates/gba-core/src/ppu.rs
+index 1a68ebe..51da2d3 100644
+--- a/crates/gba-core/src/ppu.rs
++++ b/crates/gba-core/src/ppu.rs
+@@ -45,6 +45,10 @@ fn pal16(mem: &MemMap, index: usize) -> u16 {
+ 
+ pub fn render_scanline(mem: &mut MemMap, line: usize) {
+     let dispcnt = io16(mem, 0x00);
++    if line == 0 {
++        mem.frame_display_control = dispcnt;
++    }
++    mem.frame_backdrop[line] = pal16(mem, 0);
+ 
+     if dispcnt & 0x80 != 0 {
+         // Forced blank: white.
+diff --git a/crates/recomp/src/main.rs b/crates/recomp/src/main.rs
+index 9b511e5..e97dd95 100644
+--- a/crates/recomp/src/main.rs
++++ b/crates/recomp/src/main.rs
+@@ -19,7 +19,7 @@ const ROM_BASE: u32 = 0x0800_0000;
+ 
+ /// Native shared-library extension on the host platform. The translation
+ /// pipeline links with the system `cc -shared`, which produces a PE DLL
+-/// on Windows, an ELF .so on Linux, and a Mach-O dylib on macOS — name
++/// on Windows, an ELF .so on Linux, and a Mach-O dylib on macOS â€” name
+ /// the artifact accordingly so loaders and humans agree on what it is.
+ const LIB_EXT: &str = if cfg!(windows) {
+     "dll"
+@@ -61,7 +61,7 @@ fn main() -> ExitCode {
+         Some("verify") => cmd_verify(&args[1..]),
+         Some("labels") => cmd_labels(&args[1..]),
+         // A packaged binary (manifest beside the executable) plays its
+-        // pinned title when launched bare — double-click behavior.
++        // pinned title when launched bare â€” double-click behavior.
+         None if packfile::load().is_some() => play::cmd_play(&[]),
+         _ => {
+             print_help(None);
+@@ -77,7 +77,7 @@ fn main() -> ExitCode {
+     }
+ }
+ 
+-/// `(name, synopsis, flag lines, description)` per command — the single
++/// `(name, synopsis, flag lines, description)` per command â€” the single
+ /// source for both the overview listing and per-command help.
+ const HELP: &[(&str, &str, &[&str], &str)] = &[
+     ("build", "recomp build <rom> [--ram] [--bios file] [--labels file] [--gamedb file]", &[
+@@ -102,7 +102,7 @@ covers them (accumulates across sessions)",
+         "--bios FILE    boot a specific real BIOS image (recompiled; no BIOS HLE)",
+         "--no-bios      force BIOS HLE even when an image is installed",
+     ], "Windowed play. Boots the real BIOS when one is installed ($GBA_RECOMP_BIOS, \
+-gba_bios.bin next to the executable, or the user config dir — the launcher's first-launch \
++gba_bios.bin next to the executable, or the user config dir â€” the launcher's first-launch \
+ setup installs it); BIOS HLE otherwise. First launch translates the image into the \
+ per-user cache (one-time, progress printed); later launches load it instantly. Reads \
+ input.cfg/av.cfg from the shared config directory."),
+@@ -144,7 +144,7 @@ boot diagnostics (DISPCNT/PC/SWI and live disassembly at PC)."),
+ (v1 lines or v2 TOML, auto-detected)",
+         "export [FILE]     write a shareable label file (default <rom>.labels.toml; \
+ a non-.toml FILE writes v1 lines)",
+-    ], "Inspect and exchange label files — entry points discovered at runtime or by \
++    ], "Inspect and exchange label files â€” entry points discovered at runtime or by \
+ disassembly tooling that feed translation coverage (see BUILDING.md and docs/labels.md)."),
+     ("dis", "recomp dis <rom> [--addr HEX] [--count N] [--thumb]", &[
+         "--addr HEX    start address (default ROM base)",
+@@ -152,7 +152,7 @@ disassembly tooling that feed translation coverage (see BUILDING.md and docs/lab
+         "--thumb       decode as Thumb",
+     ], "Disassemble ROM bytes at an address."),
+     ("entry-scan", "recomp entry-scan <dir>", &[],
+-     "Decode the entry branch of every image in a directory — a corpus sanity check."),
++     "Decode the entry branch of every image in a directory â€” a corpus sanity check."),
+     ("mp2k-scan", "recomp mp2k-scan <rom|dir>", &[],
+      "Report MP2K/M4A audio-driver detection (signatures, hook addresses) for one image or a directory."),
+     ("engine-scan", "recomp engine-scan <rom|dir>", &[],
+@@ -190,7 +190,7 @@ fn print_help(topic: Option<&str>) {
+ /// `<frame> <hexmask>` line per key-state change (KEYINPUT-style,
+ /// active-low). Keys hold their value between change points; before the
+ /// first point everything is released. Recorded by play under
+-/// RECOMP_RECORD_INPUT=<path>, replayed by frames/runc/verify --input —
++/// RECOMP_RECORD_INPUT=<path>, replayed by frames/runc/verify --input â€”
+ /// the bridge from a live repro to a deterministic headless one.
+ struct InputScript(Vec<(u64, u16)>);
+ 
+@@ -271,7 +271,7 @@ fn validate_rom(path: &str, rom: &[u8]) -> Result<(), String> {
+     // Every cartridge or multiboot image begins with an ARM branch to its
+     // entry point; an odd dump is worth a warning but not a refusal.
+     if rom[3] != 0xEA {
+-        eprintln!("{path}: entry point is not an ARM branch — this may not be a GBA image");
++        eprintln!("{path}: entry point is not an ARM branch â€” this may not be a GBA image");
+     }
+     Ok(())
+ }
+@@ -494,7 +494,7 @@ fn cmd_frames(args: &[String]) -> Result<(), String> {
+     }
+ 
+     // Diagnostic (RECOMP_DUMP_AUDIO=<prefix>): capture the full audio taps
+-    // headless — <prefix>.mixed.wav / .psg.wav (PCM16 mono @ tap rate)
++    // headless â€” <prefix>.mixed.wav / .psg.wav (PCM16 mono @ tap rate)
+     // and <prefix>.fifoN.bin ((i8 sample, u32le period) DAC events).
+     let dump_audio = std::env::var("RECOMP_DUMP_AUDIO").ok();
+     let mut mixed: Vec<i16> = Vec::new();
+@@ -504,7 +504,7 @@ fn cmd_frames(args: &[String]) -> Result<(), String> {
+     if dump_audio.is_some() {
+         m.bus.tap_channels = true;
+     }
+-    // RECOMP_MP2K=1: arm the HLE shadow mixer headless — the
++    // RECOMP_MP2K=1: arm the HLE shadow mixer headless â€” the
+     // differential self-check then runs under `frames`, which is the
+     // autonomous validation path for the shadow (no ears required).
+     let mp2k_on = std::env::var_os("RECOMP_MP2K").is_some();
+@@ -519,7 +519,7 @@ fn cmd_frames(args: &[String]) -> Result<(), String> {
+         .and_then(|v| v.parse().ok());
+     let mut cost: std::collections::HashMap<u32, u64> = std::collections::HashMap::new();
+     // Triage (RECOMP_WATCH=hexaddr): print a guest word at every frame
+-    // where it changes — pairs with the reference harness's REF_WATCH
++    // where it changes â€” pairs with the reference harness's REF_WATCH
+     // for state-timeline diffs.
+     let watch: Option<u32> = std::env::var("RECOMP_WATCH")
+         .ok()
+@@ -713,7 +713,7 @@ fn cmd_frames(args: &[String]) -> Result<(), String> {
+     }
+ 
+     // Live disassembly around the final PC (reads through the bus, so
+-    // RAM-resident code is visible) — invaluable for stuck-loop triage.
++    // RAM-resident code is visible) â€” invaluable for stuck-loop triage.
+     {
+         use gba_core::Bus as _;
+         let pc = m.cpu.regs[15];
+@@ -746,7 +746,7 @@ fn cmd_frames(args: &[String]) -> Result<(), String> {
+ }
+ 
+ /// Dev triage: report MP2K driver detection over a ROM or a directory
+-/// of ROMs (symlinks followed) — validates the signature scan against
++/// of ROMs (symlinks followed) â€” validates the signature scan against
+ /// the corpus and reports where each hook would land.
+ fn cmd_mp2k_scan(args: &[String]) -> Result<(), String> {
+     let target = args.first().ok_or("missing ROM or directory")?;
+@@ -810,42 +810,42 @@ fn arm_audio_hle(m: &mut Machine, pin: Option<&str>) -> String {
+             let sigs = gba_core::mp2k::detect(&m.bus.rom);
+             if sigs.is_empty() {
+                 return "DEGRADED: package pins engine-hle = m4a but no driver signature found \
+-                        — per-channel enhancement active"
++                        â€” per-channel enhancement active"
+                     .into();
+             }
+             m.bus.mp2k = Some(Box::new(gba_core::mp2k::Mp2kHle::new(&sigs)));
+-            return "M4A/MP2K — HLE shadow armed (pinned by package)".into();
++            return "M4A/MP2K â€” HLE shadow armed (pinned by package)".into();
+         }
+         Some("gax") => {
+             // v1 detects statically; the banner-era shadow self-validates
+             // against the 'GAX3' work-block magic at runtime, so arming it
+-            // blind under a pin is safe — it simply never engages on a
++            // blind under a pin is safe â€” it simply never engages on a
+             // mismatch.
+             if let Some(sig) = gba_core::gax::detect_v1(&m.bus.rom) {
+                 m.bus.gax = Some(Box::new(gba_core::gax::GaxHle::new(sig)));
+             } else {
+                 m.bus.gax = Some(Box::new(gba_core::gax::GaxHle::new_v3()));
+             }
+-            return "GAX — HLE shadow armed (pinned by package)".into();
++            return "GAX â€” HLE shadow armed (pinned by package)".into();
+         }
+         Some("rdrv") => {
+             if let Some(sig) = gba_core::rdrv::detect(&m.bus.rom) {
+                 m.bus.rdrv = Some(Box::new(gba_core::rdrv::RdrvHle::new(sig)));
+-                return "in-house (R) — HLE shadow armed (pinned by package)".into();
++                return "in-house (R) â€” HLE shadow armed (pinned by package)".into();
+             }
+-            return "DEGRADED: package pins engine-hle = rdrv but no driver found — \
++            return "DEGRADED: package pins engine-hle = rdrv but no driver found â€” \
+                     per-channel enhancement active"
+                 .into();
+         }
+         Some(other) => {
+-            eprintln!("DEGRADED: unknown engine-hle pin {other:?} — auto-detecting");
++            eprintln!("DEGRADED: unknown engine-hle pin {other:?} â€” auto-detecting");
+         }
+         None => {}
+     }
+     match gba_core::engine::classify(&m.bus.rom) {
+         gba_core::engine::Engine::M4a(sigs) => {
+             let desc = format!(
+-                "M4A/MP2K — HLE shadow armed (SoundMainRAM {})",
++                "M4A/MP2K â€” HLE shadow armed (SoundMainRAM {})",
+                 sigs.iter()
+                     .map(|s| format!("{:#010x}", s.sound_main_ram & !1))
+                     .collect::<Vec<_>>()
+@@ -856,7 +856,7 @@ fn arm_audio_hle(m: &mut Machine, pin: Option<&str>) -> String {
+         }
+         gba_core::engine::Engine::Gax(ver) => {
+             if let Some(sig) = gba_core::gax::detect_v1(&m.bus.rom) {
+-                let desc = "GAX v1 lineage — HLE shadow armed (state block located at runtime)"
++                let desc = "GAX v1 lineage â€” HLE shadow armed (state block located at runtime)"
+                     .to_string();
+                 m.bus.gax = Some(Box::new(gba_core::gax::GaxHle::new(sig)));
+                 desc
+@@ -865,23 +865,23 @@ fn arm_audio_hle(m: &mut Machine, pin: Option<&str>) -> String {
+                 // runtime ('GAX3' magic + structural validation).
+                 m.bus.gax = Some(Box::new(gba_core::gax::GaxHle::new_v3()));
+                 format!(
+-                    "GAX {} — HLE shadow armed (work block located at runtime)",
++                    "GAX {} â€” HLE shadow armed (work block located at runtime)",
+                     ver.as_deref().unwrap_or("?")
+                 )
+             } else {
+-                "GAX (early, unrecognized revision) — per-channel enhancement active".into()
++                "GAX (early, unrecognized revision) â€” per-channel enhancement active".into()
+             }
+         }
+         gba_core::engine::Engine::Rdiag => {
+             if let Some(sig) = gba_core::rdrv::detect(&m.bus.rom) {
+                 m.bus.rdrv = Some(Box::new(gba_core::rdrv::RdrvHle::new(sig)));
+-                "in-house (R) — HLE shadow armed (mixer blob located at runtime)".into()
++                "in-house (R) â€” HLE shadow armed (mixer blob located at runtime)".into()
+             } else {
+-                "in-house (R, unrecognized revision) — per-channel enhancement active".into()
++                "in-house (R, unrecognized revision) â€” per-channel enhancement active".into()
+             }
+         }
+         other => format!(
+-            "{} — per-channel enhancement active (engine HLE not yet available)",
++            "{} â€” per-channel enhancement active (engine HLE not yet available)",
+             other.describe()
+         ),
+     }
+@@ -941,7 +941,7 @@ fn check_entry(path: &Path) -> Result<String, String> {
+ /// Apply a live A/V change the in-game menu made. Video settings rebuild
+ /// the cheap derived objects in place (color LUT, temporal response,
+ /// grid); the temporal history resets, which is a single frame and
+-/// invisible. Enhanced audio flips the shared crossfade target — both
++/// invisible. Enhanced audio flips the shared crossfade target â€” both
+ /// paths are always warm, so the callback slews between them seamlessly.
+ /// Only the output gamut stays restart-required (baked into the GPU
+ /// presenter); the menu persists it to av.cfg for the next launch.
+@@ -1012,12 +1012,12 @@ fn status_line(s: &str) {
+ 
+ /// Translation cache revision. Bump on ANY change that can invalidate a
+ /// cached translation: emitter output, runtime ABI, or emulation
+-/// semantics — `--ram` builds bake interpreter-profiled state (seeds +
++/// semantics â€” `--ram` builds bake interpreter-profiled state (seeds +
+ /// RAM snapshots) into the translation, so HLE/core fixes count too.
+ /// Rev history: 1 = initial; 2 = HuffUnComp HLE, whole-block RAM
+ /// guards, conditional-BL link fix; 3 = MidiKey2Freq HLE + sound
+ /// FIFO/DMA timing fixes (profiled state shifts); 4 = SWI ends blocks
+-/// (halt ordering vs following instructions — scanline-effect timing).
++/// (halt ordering vs following instructions â€” scanline-effect timing).
+ const TRANSLATION_REV: u32 = 5;
+ 
+ /// Locate (or build) the cached native translation for this image.
+@@ -1036,7 +1036,7 @@ fn ensure_native(
+         .unwrap_or_else(std::env::temp_dir)
+         .join("gba-recomp");
+     let dir = base.join(format!("t{TRANSLATION_REV}"));
+-    // Sweep superseded revision directories — they can only hold stale
++    // Sweep superseded revision directories â€” they can only hold stale
+     // translations no current binary will ever load.
+     if let Ok(entries) = std::fs::read_dir(&base) {
+         for e in entries.flatten() {
+@@ -1059,15 +1059,15 @@ fn ensure_native(
+         String::new()
+     };
+     // Real-BIOS translations bake region-0 code and different boot/SWI
+-    // semantics into the dylib, so they key on the BIOS content too —
++    // semantics into the dylib, so they key on the BIOS content too â€”
+     // swapping the installed BIOS rebuilds rather than loading stale
+     // natives, and HLE/real artifacts can never shadow each other.
+     if let Some(b) = bios {
+         let bsha = rom_sha256(b);
+         suffix.push_str(&format!("-b{}", &bsha[..8]));
+     }
+-    // The boundary source — the gamedb when it carries this image
+-    // (mapper-grade, full coverage), else label files beside it — drives
++    // The boundary source â€” the gamedb when it carries this image
++    // (mapper-grade, full coverage), else label files beside it â€” drives
+     // BOTH the build and the cache key, so a gamedb build and a file build
+     // never shadow each other and grown coverage retranslates.
+     let from_gamedb = gamedb.filter(|db| db.function_count(&sha).map(|n| n > 0).unwrap_or(false));
+@@ -1080,7 +1080,7 @@ fn ensure_native(
+     } else {
+         let blob = labels::Blob::load(&labels::blob_path(&sha));
+         let d = lbl.digest(blob.as_ref());
+-        // 'g' = gamedb-sourced (exhaustive), 'l' = label files — distinct
++        // 'g' = gamedb-sourced (exhaustive), 'l' = label files â€” distinct
+         // key families so switching source always retranslates.
+         let tag = if from_gamedb.is_some() { 'g' } else { 'l' };
+         format!("-{tag}{:08x}", d as u32 ^ (d >> 32) as u32)
+@@ -1089,7 +1089,7 @@ fn ensure_native(
+     let lib_str = lib_path.to_str().ok_or("non-UTF8 cache path")?;
+     if !lib_path.is_file() {
+         // Superseded translations of this image (older label sets) can
+-        // never be loaded again — sweep them before building anew.
++        // never be loaded again â€” sweep them before building anew.
+         // Same suffix family only, so normal and experimental entries
+         // never evict each other.
+         if let Ok(entries) = std::fs::read_dir(&dir) {
+@@ -1172,7 +1172,7 @@ struct AudioStreams {
+     mixed: std::collections::VecDeque<i16>,
+     psg: std::collections::VecDeque<f32>,
+     fifo: [std::collections::VecDeque<(i8, u32)>; 2],
+-    /// Target for the faithful↔enhanced crossfade: the callback slews
++    /// Target for the faithfulâ†”enhanced crossfade: the callback slews
+     /// toward 1.0 (enhanced) or 0.0 (faithful) over ~40 ms. The in-game
+     /// menu flips it; both paths stay warm so the switch is seamless.
+     enhanced_on: bool,
+@@ -1188,15 +1188,15 @@ struct AudioStreams {
+     /// SOUNDCNT_H 50%-volume flags per Direct Sound channel.
+     vol_half: [bool; 2],
+     /// Producer-side ring drops and consumer-side underrun holds since
+-    /// the last report. Silent audio defects are still defects — the
++    /// the last report. Silent audio defects are still defects â€” the
+     /// play loop surfaces nonzero deltas as DEGRADED.
+     drops: u64,
+     holds: u64,
+     /// Sample pairs that crossed the hardware rail (soft-knee engaged)
+     /// since the last report. Expected behavior on hot mixes, not a
+-    /// defect — surfaced as a stats line, never DEGRADED.
++    /// defect â€” surfaced as a stats line, never DEGRADED.
+     clipped: u64,
+-    /// Frames the device callback has consumed since stream start — the
++    /// Frames the device callback has consumed since stream start â€” the
+     /// play loop's liveness signal for the output device.
+     consumed: u64,
+     /// Set by the stream error callback; the play loop's watchdog turns
+@@ -1210,7 +1210,7 @@ struct AudioStreams {
+ struct Enhanced {
+     psg: SincResampler,
+     fifo: [FifoInterp; 2],
+-    /// MP2K HLE stream resampler — crossfaded against `fifo` as the
++    /// MP2K HLE stream resampler â€” crossfaded against `fifo` as the
+     /// shadow mixer proves/pauses.
+     hle: SincResampler,
+     /// Crossfade position (0 = per-channel path, 1 = HLE) and its
+@@ -1227,12 +1227,12 @@ struct Enhanced {
+ fn start_audio(streams: std::sync::Arc<std::sync::Mutex<AudioStreams>>) -> Option<cpal::Stream> {
+     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+     let Some(device) = cpal::default_host().default_output_device() else {
+-        eprintln!("DEGRADED: no audio output device — silent session, wall-clock pacing");
++        eprintln!("DEGRADED: no audio output device â€” silent session, wall-clock pacing");
+         return None;
+     };
+     // Negotiate a config: the device default when its sample format is
+     // renderable, else the first supported f32/i16/u16 layout (plenty of
+-    // ALSA/WASAPI devices default to i16 — refusing them would mean
++    // ALSA/WASAPI devices default to i16 â€” refusing them would mean
+     // silence on otherwise fine hardware).
+     let renderable = |f: cpal::SampleFormat| {
+         matches!(
+@@ -1252,14 +1252,14 @@ fn start_audio(streams: std::sync::Arc<std::sync::Mutex<AudioStreams>>) -> Optio
+                 (Ok(c), None) => {
+                     eprintln!(
+                         "DEGRADED: audio device offers no renderable sample format \
+-                         ({:?}) — silent session, wall-clock pacing",
++                         ({:?}) â€” silent session, wall-clock pacing",
+                         c.sample_format()
+                     );
+                     return None;
+                 }
+                 (Err(e), None) => {
+                     eprintln!(
+-                        "DEGRADED: audio device config unavailable ({e}) — silent \
++                        "DEGRADED: audio device config unavailable ({e}) â€” silent \
+                          session, wall-clock pacing"
+                     );
+                     return None;
+@@ -1284,14 +1284,14 @@ fn start_audio(streams: std::sync::Arc<std::sync::Mutex<AudioStreams>>) -> Optio
+             Some(stream)
+         }
+         Err(e) => {
+-            eprintln!("DEGRADED: audio stream failed ({e}) — silent session, wall-clock pacing");
++            eprintln!("DEGRADED: audio stream failed ({e}) â€” silent session, wall-clock pacing");
+             None
+         }
+     }
+ }
+ 
+ /// Build the typed output stream over the shared rings. Generic over the
+-/// device sample format — everything renders in f32 and converts on
++/// device sample format â€” everything renders in f32 and converts on
+ /// write, so i16/u16-only devices work identically. Both audio paths run
+ /// every callback; the menu crossfades between them.
+ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
+@@ -1313,7 +1313,7 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
+         xfade_k: (1.0 / (0.040 * rate)) as f32,
+         dc: [DcBlock::new(rate), DcBlock::new(rate)],
+     };
+-    // Faithful↔enhanced crossfade: start matched to the loaded setting so
++    // Faithfulâ†”enhanced crossfade: start matched to the loaded setting so
+     // there's no fade at launch, then slew (~40 ms) whenever the menu
+     // flips `enhanced_on`.
+     let mut mode_x: f32 = if streams.lock().unwrap().enhanced_on {
+@@ -1346,9 +1346,9 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
+                         let mut l = pl;
+                         let mut r = pr;
+                         {
+-                            // BOTH Direct Sound paths stay warm — the
++                            // BOTH Direct Sound paths stay warm â€” the
+                             // per-channel interpolators and the MP2K
+-                            // shadow stream — and a short equal-power-
++                            // shadow stream â€” and a short equal-power-
+                             // ish crossfade moves between them, so an
+                             // HLE engage or pause is never an audible
+                             // seam (both render the same music).
+@@ -1388,7 +1388,7 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
+                             r += fr * (1.0 - xf) + gr * xf;
+                             // Stage 2: where the hardware would hard-clip
+                             // the over-rail sum, saturate it softly
+-                            // instead — before the DC block, matching the
++                            // instead â€” before the DC block, matching the
+                             // hardware order (rail precedes the output
+                             // coupling). Below the rail this is exact
+                             // identity, so unclipped material is
+@@ -1402,7 +1402,7 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
+                     // Faithful output (also always computed, also drained).
+                     let (fl, fr) = {
+                         // The emulated DAC runs on the 59.73 Hz frame
+-                        // grid while the window paces 60 — steer the
++                        // grid while the window paces 60 â€” steer the
+                         // faithful path too, or the ring overflows
+                         // into a burst-drop buzz at the cap.
+                         let pairs = (st.mixed.len() / 2) as f64;
+@@ -1422,18 +1422,18 @@ fn build_stream<T: cpal::SizedSample + cpal::FromSample<f32>>(
+                     };
+                     // Crossfade between the two finished paths. Both are
+                     // level-matched (shared OUT_GAIN below), so a linear
+-                    // blend across the ~40 ms slew is seam-free — the
++                    // blend across the ~40 ms slew is seam-free â€” the
+                     // music is the same, only the rendering differs.
+                     let target = if st.enhanced_on { 1.0 } else { 0.0 };
+                     mode_x += (target - mode_x) * mode_k;
+                     let l = fl + (el - fl) * mode_x;
+                     let r = fr + (er - fr) * mode_x;
+-                    // Calibrate the hardware rail (±0x200 units = ±0.5
++                    // Calibrate the hardware rail (Â±0x200 units = Â±0.5
+                     // here) toward device full scale. Both paths share
+                     // the gain so the A/V toggle stays level-matched;
+                     // it leaves ~2 dB above the rail for the enhanced
+                     // path's soft knee. The clamp is a safety net for
+-                    // DC-block overshoot — faithful content was already
++                    // DC-block overshoot â€” faithful content was already
+                     // rail-clipped at the mix (the canon hard clip).
+                     let l = (l * OUT_GAIN).clamp(-1.0, 1.0);
+                     let r = (r * OUT_GAIN).clamp(-1.0, 1.0);
+@@ -1463,10 +1463,10 @@ const SINC_TAPS: usize = 24;
+ const SINC_PHASES: usize = 128;
+ /// Ring fill the rate control steers toward (~62 ms at the 65536 Hz tap).
+ const RING_TARGET: usize = 4096;
+-/// Hardware clip rail in the float mix domain (±0x200 units = ±0.5).
++/// Hardware clip rail in the float mix domain (Â±0x200 units = Â±0.5).
+ const RAIL: f32 = 0.5;
+ /// Output gain calibrating the rail toward device full scale. 1.6 puts
+-/// the rail ~2 dB under full scale — the headroom the enhanced path's
++/// the rail ~2 dB under full scale â€” the headroom the enhanced path's
+ /// soft knee lands over-rail peaks in.
+ const OUT_GAIN: f32 = 1.6;
+ 
+@@ -1474,7 +1474,7 @@ const OUT_GAIN: f32 = 1.6;
+ /// through the hardware rail, then a tanh knee compressing the over-rail
+ /// region (the six-channel sum can reach 3x the rail) into the headroom
+ /// above it, asymptoting at full scale after OUT_GAIN. C1 at the knee.
+-/// Faithful mode keeps the hard rail — clipping is sometimes the
++/// Faithful mode keeps the hard rail â€” clipping is sometimes the
+ /// intended texture (the research note's "GBA speaker" mono examples).
+ fn soft_clip(x: f32) -> f32 {
+     let a = x.abs();
+@@ -1543,7 +1543,7 @@ impl DcBlock {
+ }
+ 
+ /// Fixed-ratio polyphase windowed-sinc resampler over an interleaved
+-/// stereo queue, with gentle (max ±2%) consumption-rate control against
++/// stereo queue, with gentle (max Â±2%) consumption-rate control against
+ /// the queue fill. Band-limits to the narrower of the two Nyquists, so
+ /// downsampling to a 44.1/48 kHz device does not fold images the way
+ /// the zero-order-hold path does. Used for the PSG grid stream.
+@@ -1599,12 +1599,12 @@ impl SincResampler {
+ }
+ 
+ /// Renders one Direct Sound channel as band-limited steps (the blip-buf
+-/// idea): each DAC transition deposits a windowed-sinc impulse — the
+-/// step's derivative — into a small future ring at its exact fractional
++/// idea): each DAC transition deposits a windowed-sinc impulse â€” the
++/// step's derivative â€” into a small future ring at its exact fractional
+ /// output position, and a leaky integrator reconstructs the waveform.
+ /// Edges land jitter-free at the channel's own timer rate (which may
+-/// change at any event), and crucially the DAC staircase spectrum — the
+-/// ZOH images above the mix rate's Nyquist — survives up to the device
++/// change at any event), and crucially the DAC staircase spectrum â€” the
++/// ZOH images above the mix rate's Nyquist â€” survives up to the device
+ /// Nyquist. That brightness is part of the hardware's canon sound;
+ /// smooth sample interpolation removes it and audibly dulls transients
+ /// (reference-trace comparison on a square-timbre chime). Channels
+@@ -1681,7 +1681,7 @@ impl FifoInterp {
+ }
+ 
+ /// Vendored community controller mapping DB (zlib; see THIRD-PARTY.md).
+-/// gilrs bundles its own snapshot, but it lags newer controllers — this
++/// gilrs bundles its own snapshot, but it lags newer controllers â€” this
+ /// fresher copy is fed on top so the packaged play binary recognizes the
+ /// broadest possible set of pads with no external file dependency.
+ const CONTROLLER_DB: &str = include_str!("../../../assets/gamecontrollerdb.txt");
+@@ -1886,7 +1886,7 @@ fn build_dylib(
+         // BIOS the boot animation runs ~230 frames before the cart
+         // entry is ever reached, which would otherwise consume the
+         // whole window (measured: 0 entry points profiled). The boot
+-        // chime is also not the soundtrack — audio engagement only
++        // chime is also not the soundtrack â€” audio engagement only
+         // counts after cart handoff.
+         let mut cart_frame0: Option<u64> = None;
+         loop {
+@@ -1946,7 +1946,7 @@ fn build_dylib(
+             // Seed observed control-transfer targets in IWRAM and ROM.
+             // ROM targets recover code static traversal can't reach
+             // (computed branches, handlers installed by RAM code) and
+-            // need no guard — ROM is immutable. IWRAM blocks are
++            // need no guard â€” ROM is immutable. IWRAM blocks are
+             // content-guarded at execution time. EWRAM stays excluded
+             // by default: it commonly holds streamed overlays, where
+             // entry guards detect the swap but the hash-then-interpret
+@@ -1955,7 +1955,7 @@ fn build_dylib(
+             // Real-BIOS builds also seed observed BIOS entries: the
+             // vectors + pointer sweep cover the static reachables, but
+             // indirect returns (IntrWait re-entry, handler exits) are
+-            // only visible dynamically — and the BIOS is as immutable
++            // only visible dynamically â€” and the BIOS is as immutable
+             // as ROM, so they need no guard either.
+             let seedable = |pc: u32| {
+                 pc >> 24 == 3
+@@ -2009,13 +2009,13 @@ fn build_dylib(
+         let before = set.len();
+         set.extend(&lbl.rom);
+         // RECOMP_EXHAUSTIVE (full-recomp packaging): a soak proves the
+-        // covered paths, not all paths — computed jump-table targets
++        // covered paths, not all paths â€” computed jump-table targets
+         // inside a function appear only when play reaches them. With
+         // complete boundaries (`end` records from a mapper-grade set),
+         // every decode point inside every mapped function becomes a
+         // seed, so any computed target the game can ever take has a
+         // native block. Pool words inside ranges translate to junk
+-        // blocks nothing dispatches to — size, not correctness.
++        // blocks nothing dispatches to â€” size, not correctness.
+         if exhaustive {
+             let mut dense = 0usize;
+             for (&key, &end) in &lbl.ends {
+@@ -2060,7 +2060,7 @@ fn build_dylib(
+         println!("labels: +{rom_added} rom, +{iw_added} iwram seeds");
+         if iw_unbacked != 0 {
+             println!(
+-                "labels: {iw_unbacked} iwram entries lack a local snapshot — \
++                "labels: {iw_unbacked} iwram entries lack a local snapshot â€” \
+ run play/runc --record-labels to capture one"
+             );
+         }
+@@ -2068,7 +2068,7 @@ run play/runc --record-labels to capture one"
+ 
+     // Real-BIOS translation seeds: the exception vectors, plus a sweep of
+     // every aligned word in the image that looks like an in-BIOS code
+-    // pointer — the SWI dispatcher reaches its handlers through an
++    // pointer â€” the SWI dispatcher reaches its handlers through an
+     // address table (an indexed load, not a PC-relative literal), which
+     // recursive traversal alone cannot follow. Junk seeds are harmless:
+     // unreached blocks just bloat the output (translate-everything).
+@@ -2100,8 +2100,8 @@ run play/runc --record-labels to capture one"
+         },
+         bios,
+     };
+-    // Hand the assembled view + seeds to the engine: analyze → emit C →
+-    // compile each unit → link. It emits the `blocks:`/`wrote` report lines
++    // Hand the assembled view + seeds to the engine: analyze â†’ emit C â†’
++    // compile each unit â†’ link. It emits the `blocks:`/`wrote` report lines
+     // on stdout (the packager's contract) at the same points the inline
+     // pipeline did.
+     let cc = Compiler::detect();
+@@ -2114,7 +2114,7 @@ type BlockFn = extern "C" fn(*const gba_core::capi::RtApi, *mut std::ffi::c_void
+ 
+ /// Direct-indexed block lookup. Keys are `guest address | thumb bit`;
+ /// nearly all live in the ROM window (and IWRAM for --ram builds), so
+-/// those get dense tables — lookup is a subtract, compare, and load —
++/// those get dense tables â€” lookup is a subtract, compare, and load â€”
+ /// with a HashMap holding any stragglers.
+ struct BlockTable {
+     rom: Vec<Option<BlockFn>>,
+@@ -2218,7 +2218,7 @@ impl BlockTable {
+ 
+ /// Drive the machine to the next completed frame using translated blocks
+ /// where available and the interpreter elsewhere, with interrupt
+-/// machinery serviced at block boundaries — the same execution sequence
++/// machinery serviced at block boundaries â€” the same execution sequence
+ /// as the original whole-run dispatch loop, bounded per frame. Returns
+ /// (native blocks run, fallback steps); the frame is incomplete only if
+ /// `max_steps` was exhausted (the caller's stall guard).
+@@ -2291,7 +2291,7 @@ fn run_frame_native(
+             None => {
+                 if NO_INTERP.load(std::sync::atomic::Ordering::Relaxed) {
+                     eprintln!(
+-                        "DEFECT: full recomp missing native code at {:08x} ({}) — this \
++                        "DEFECT: full recomp missing native code at {:08x} ({}) â€” this \
+ code path is not covered by the package's translation. Report this address to the \
+ packager (it becomes a label; the rebuilt package covers it).",
+                         key & !1,
+@@ -2300,7 +2300,7 @@ packager (it becomes a label; the rebuilt package covers it).",
+                     std::process::exit(2);
+                 }
+                 // Diagnostic (RECOMP_TRACE_FALLBACK): census of fallback
+-                // *entries* — the dispatch keys that would be labels.
++                // *entries* â€” the dispatch keys that would be labels.
+                 // Straight-line continuation inside a fallback run is not
+                 // an entry; the same discontinuity filter as the build
+                 // profiler applies.
+@@ -2342,7 +2342,7 @@ thread_local! {
+     static IWRAM_HITS: std::cell::RefCell<std::collections::HashMap<u32, u64>> =
+         std::cell::RefCell::new(std::collections::HashMap::new());
+ 
+-    /// Diagnostic (RECOMP_TRACE_FALLBACK): fallback-entry census —
++    /// Diagnostic (RECOMP_TRACE_FALLBACK): fallback-entry census â€”
+     /// dispatch keys (addr | thumb) that missed the block table, with
+     /// hit counts. Entries only, not straight-line continuations.
+     static FALLBACK_ENTRIES: std::cell::RefCell<std::collections::HashMap<u32, u64>> =
+@@ -2500,7 +2500,7 @@ fn cmd_labels(args: &[String]) -> Result<(), String> {
+         "import" => {
+             let file = args.get(2).ok_or("import needs a label file")?;
+             let incoming = labels::Labels::load(std::path::Path::new(file), &sha, rom.len())?;
+-            // Enriched (named) sets go to the TOML accumulator — the v1
++            // Enriched (named) sets go to the TOML accumulator â€” the v1
+             // file can't carry names; address-only sets keep using it.
+             let enriched = !incoming.names.is_empty() || !incoming.ends.is_empty();
+             let path = if enriched {
+@@ -2540,7 +2540,7 @@ captures their content"
+             let out = args.get(2).cloned().unwrap_or(default);
+             let all = labels::load_all(rom_path, &sha, rom.len());
+             if all.is_empty() && all.reserved.is_empty() {
+-                return Err("nothing to export — record some labels first".into());
++                return Err("nothing to export â€” record some labels first".into());
+             }
+             // The extension picks the format: .toml = v2 interchange
+             // (names/ends preserved), anything else = v1 lines.
+@@ -2574,7 +2574,7 @@ fn term_progress(pct: u8, msg: &str) {
+     let _ = std::io::stderr().flush();
+ }
+ 
+-/// SHA-256 of the image, hex — the cross-tool image identity.
++/// SHA-256 of the image, hex â€” the cross-tool image identity.
+ fn rom_sha256(rom: &[u8]) -> String {
+     use sha2::{Digest, Sha256};
+     Sha256::digest(rom)
+@@ -2667,8 +2667,9 @@ fn cmd_runc(args: &[String]) -> Result<(), String> {
+     let table = BlockTable::load(&lib)?;
+     println!("loaded {} translated blocks", table.len);
+ 
++    let mut wide_video = if out.is_some() { play::wide_video::WideVideo::configured() } else { None };
+     let mut m = make_machine(rom, bios.as_deref());
+-    // RECOMP_MP2K=1: arm the HLE shadow under native dispatch — the
++    // RECOMP_MP2K=1: arm the HLE shadow under native dispatch â€” the
+     // hook-at-block-boundary path play uses, validated headless here.
+     if std::env::var_os("RECOMP_MP2K").is_some() {
+         m.bus.tap_channels = true;
+@@ -2743,7 +2744,27 @@ fn cmd_runc(args: &[String]) -> Result<(), String> {
+         }
+     }
+ 
+-    // FNV-1a framebuffer hash — must match the interpreter's `frames` run.
++    if let (Some(video), Some(path)) = (&mut wide_video, &out) {
++        if !video.render(&m) {
++            let rgba: Vec<_> = m.bus.framebuffer.iter().map(|&p| {
++                let component = |shift: u32| (((p >> shift) & 31) * 255 / 31) as u8;
++                [component(0), component(5), component(10), 255]
++            }).collect();
++            video.layout_2d(&rgba);
++        }
++        use std::io::Write;
++        let (w, h) = play::wide_video::SIZE;
++        let file = std::fs::File::create(path).map_err(|e| format!("{path}: {e}"))?;
++        let mut file = std::io::BufWriter::new(file);
++        write!(file, "P6\n{w} {h}\n255\n").map_err(|e| e.to_string())?;
++        for pixel in &video.pixels {
++            file.write_all(&pixel[..3]).map_err(|e| e.to_string())?;
++        }
++        file.flush().map_err(|e| e.to_string())?;
++        out = None;
++    }
++
++    // FNV-1a framebuffer hash â€” must match the interpreter's `frames` run.
+     let mut hash = 0xcbf2_9ce4_8422_2325u64;
+     for &px in &m.bus.framebuffer {
+         for b in px.to_le_bytes() {
+@@ -2905,7 +2926,7 @@ fn cmd_verify(args: &[String]) -> Result<(), String> {
+ }
+ 
+ /// Deterministic demo input for differential runs: taps Start, then A,
+-/// periodically — enough to leave title screens and menus in most games.
++/// periodically â€” enough to leave title screens and menus in most games.
+ fn demo_keys(frame: u64) -> u16 {
+     let mut keys = 0x3FFu16;
+     let phase = frame % 180;
+@@ -3071,7 +3092,7 @@ mod tests {
+ 
+     #[test]
+     fn fifo_interp_preserves_sine_at_mp2k_rate() {
+-        // 1 kHz at 13379 Hz (period 1254) — the MP2K default mix rate —
++        // 1 kHz at 13379 Hz (period 1254) â€” the MP2K default mix rate â€”
+         // interpolated to 48 kHz: RMS within a few percent of the 8-bit
+         // source amplitude.
+         let mut f = FifoInterp::new(48000.0);
+diff --git a/crates/recomp/src/play.rs b/crates/recomp/src/play.rs
+index 32db16d..6d8895f 100644
+--- a/crates/recomp/src/play.rs
++++ b/crates/recomp/src/play.rs
+@@ -3,14 +3,14 @@
+ //! the audio-clock pacing loop. Extracted from `main.rs` as the one cohesive
+ //! "interactive shell" unit; everything it needs from the CLI/runtime core
+ //! (translation, machine construction, audio rings, screen config) it reaches
+-//! through `crate::` — this module is a child of the crate root and so may
++//! through `crate::` â€” this module is a child of the crate root and so may
+ //! use the root's items directly.
+ //!
+ //! Pacing principle (load-bearing, see `screen::present` docs): emulation
+ //! speed is owned by the audio clock, never the display. winit 0.30 is
+ //! callback-driven, so the former `while window.is_open()` body lives in
+ //! [`ApplicationHandler::about_to_wait`] under `ControlFlow::Poll`, and the
+-//! frame is presented *directly* there the instant it is produced — never
++//! frame is presented *directly* there the instant it is produced â€” never
+ //! gated on `RedrawRequested`/vsync, which would couple game speed to the
+ //! panel.
+ 
+@@ -31,6 +31,8 @@ use winit::window::{Fullscreen, Window, WindowId};
+ 
+ use recomp_core::fnv64;
+ 
++pub(crate) mod wide_video;
++
+ use crate::{
+     apply_av_change, arm_audio_hle, build_gilrs, ensure_native, load_bios_file, load_native,
+     make_machine, pad_pressed, print_fallback_census, record_labels, rom_sha256, run_frame_native,
+@@ -40,7 +42,7 @@ use crate::{
+ 
+ /// Per-frame down-state of the host-menu navigation inputs, debounced against
+ /// the previous frame to produce rising-edge events. Kept separate from the
+-/// GBA key state — menu input never leaks to the game.
++/// GBA key state â€” menu input never leaks to the game.
+ #[derive(Clone, Copy, Default)]
+ struct NavEdges {
+     up: bool,
+@@ -49,7 +51,7 @@ struct NavEdges {
+     right: bool,
+     confirm: bool,
+     /// Back out of the menu (Escape / pad East). Only consulted while the
+-    /// menu is open — East is the player's B button during gameplay, so it
++    /// menu is open â€” East is the player's B button during gameplay, so it
+     /// must never open the menu.
+     cancel: bool,
+     /// Open the menu from gameplay: keyboard Escape, or a dedicated pad
+@@ -60,7 +62,7 @@ struct NavEdges {
+ 
+ /// Canonical key name (see input-config) to a winit *physical* key. Physical
+ /// (scancode-position) keys keep a binding in the same spot regardless of
+-/// QWERTY/AZERTY — the gamepad-style "this key here" model the old minifb
++/// QWERTY/AZERTY â€” the gamepad-style "this key here" model the old minifb
+ /// mapping had, which also sidesteps layout-dependent defaults.
+ fn winit_key(name: &str) -> Option<KeyCode> {
+     use KeyCode::*;
+@@ -146,7 +148,7 @@ struct PlayApp {
+     key_pairs: Vec<(KeyCode, u16)>,
+     pad: Option<gilrs::Gilrs>,
+     /// Physical keys currently held, reconstructed from key press/release
+-    /// events — winit's event-driven equivalent of minifb's `is_key_down`.
++    /// events â€” winit's event-driven equivalent of minifb's `is_key_down`.
+     held: HashSet<KeyCode>,
+ 
+     // Screen simulation (rebuilt live by the menu).
+@@ -162,6 +164,7 @@ struct PlayApp {
+     temporal: screen::Temporal,
+     grid_params: screen::present::GridParams,
+     rgba: Vec<[u8; 4]>,
++    wide_video: Option<wide_video::WideVideo>,
+ 
+     // Window + presentation (created in `resumed`).
+     title: String,
+@@ -208,8 +211,23 @@ impl PlayApp {
+         };
+         let size = window.inner_size();
+         let phys = (size.width.max(1), size.height.max(1));
++        let (rgba, source, grid) = if let Some(wide) = self.wide_video.as_mut() {
++            if !wide.render(&self.machine) {
++                wide.layout_2d(&self.rgba);
++            }
++            if self.paused {
++                wide.draw_pause(&self.menu, &self.av);
++            }
++            (
++                wide.pixels.as_slice(),
++                wide_video::SIZE,
++                screen::present::GridParams::with_strength(0.0),
++            )
++        } else {
++            (self.rgba.as_slice(), (240, 160), self.grid_params)
++        };
+         if let Some(p) = self.presenter.as_mut() {
+-            match p.present(&self.rgba, phys, &self.grid_params) {
++            match p.present(rgba, phys, &grid) {
+                 Ok(()) => return,
+                 Err(e) => {
+                     eprintln!("video: GPU presenter failed ({e}); basic scaling active");
+@@ -217,19 +235,24 @@ impl PlayApp {
+                 }
+             }
+         }
+-        self.present_software(&window, phys);
++        Self::present_software(&mut self.sb_context, &mut self.sb_surface, &window, phys, source, rgba);
+     }
+ 
+-    /// Software fallback (no GPU / presenter lost): nearest-neighbor, aspect-
+-    /// correct letterbox of the 240x160 frame into the window via softbuffer,
+-    /// matching the GPU presenter's centering. Lazily creates the surface.
+-    fn present_software(&mut self, window: &Arc<Window>, (w, h): (u32, u32)) {
+-        if self.sb_surface.is_none() {
++    /// Aspect-correct nearest-neighbor fallback for the selected video source.
++    fn present_software(
++        context: &mut Option<softbuffer::Context<Arc<Window>>>,
++        surface: &mut Option<softbuffer::Surface<Arc<Window>, Arc<Window>>>,
++        window: &Arc<Window>,
++        (w, h): (u32, u32),
++        (sw, sh): (u32, u32),
++        rgba: &[[u8; 4]],
++    ) {
++        if surface.is_none() {
+             match softbuffer::Context::new(window.clone()) {
+                 Ok(ctx) => match softbuffer::Surface::new(&ctx, window.clone()) {
+                     Ok(surf) => {
+-                        self.sb_context = Some(ctx);
+-                        self.sb_surface = Some(surf);
++                        *context = Some(ctx);
++                        *surface = Some(surf);
+                     }
+                     Err(e) => {
+                         eprintln!("video: software surface unavailable ({e})");
+@@ -242,7 +265,7 @@ impl PlayApp {
+                 }
+             }
+         }
+-        let Some(surf) = self.sb_surface.as_mut() else {
++        let Some(surf) = surface.as_mut() else {
+             return;
+         };
+         let (Some(nw), Some(nh)) = (NonZeroU32::new(w), NonZeroU32::new(h)) else {
+@@ -259,7 +282,6 @@ impl PlayApp {
+                 return;
+             }
+         };
+-        let (sw, sh) = (240u32, 160u32);
+         let scale = ((w as f32) / (sw as f32)).min((h as f32) / (sh as f32));
+         let dw = ((sw as f32) * scale) as u32;
+         let dh = ((sh as f32) * scale) as u32;
+@@ -274,7 +296,7 @@ impl PlayApp {
+             let srow = (sy * sw) as usize;
+             for x in 0..dw.min(w) {
+                 let sx = (((x as f32) / scale) as u32).min(sw - 1);
+-                let s = self.rgba[srow + sx as usize];
++                let s = rgba[srow + sx as usize];
+                 buffer[drow + (ox + x) as usize] =
+                     (s[0] as u32) << 16 | (s[1] as u32) << 8 | s[2] as u32;
+             }
+@@ -351,7 +373,7 @@ impl PlayApp {
+                 nav.right |= gp.is_pressed(Gb::DPadRight) || gp.value(Axis::LeftStickX) > dz;
+                 nav.confirm |= gp.is_pressed(Gb::South);
+                 nav.cancel |= gp.is_pressed(Gb::East);
+-                // Opening from the pad uses the guide/Mode button — the one
++                // Opening from the pad uses the guide/Mode button â€” the one
+                 // control no GBA button maps to. (Keyboard Escape always works
+                 // too.) A chord like Start+Select is deliberately NOT a
+                 // default: those are real in-game buttons.
+@@ -375,13 +397,13 @@ impl PlayApp {
+             }
+             None => self.machine.run_frame(5_000_000),
+         }
+-        // Advance the screen's temporal response once per EMULATED frame —
++        // Advance the screen's temporal response once per EMULATED frame â€”
+         // never per presented frame, or flicker-transparency titles lock onto
+         // one phase (the classic parity bug).
+         self.temporal.push(&self.machine.bus.framebuffer, &self.lut);
+ 
+         // Realtime alarm: the frame budget is 16.7 ms. If smoothed emulation
+-        // cost approaches it, the product promise is broken — say so once.
++        // cost approaches it, the product promise is broken â€” say so once.
+         let dt_ms = emu_t0.elapsed().as_secs_f64() * 1e3;
+         self.emu_ema_ms = if self.frames_run == 0 {
+             dt_ms
+@@ -392,12 +414,12 @@ impl PlayApp {
+         if !self.slow_warned && self.frames_run > 120 && self.emu_ema_ms > 15.0 {
+             self.slow_warned = true;
+             eprintln!(
+-                "DEGRADED: emulation averaging {:.1} ms/frame (budget 16.7 ms) — below native speed",
++                "DEGRADED: emulation averaging {:.1} ms/frame (budget 16.7 ms) â€” below native speed",
+                 self.emu_ema_ms
+             );
+         }
+ 
+-        // Live perf readout in the title, once a second. Developer tooling —
++        // Live perf readout in the title, once a second. Developer tooling â€”
+         // hidden from the release out-of-box experience unless requested.
+         if self.show_stats && self.frames_run % 60 == 0 {
+             let total = self.native_run + self.fallback_run;
+@@ -408,7 +430,7 @@ impl PlayApp {
+             };
+             if let Some(w) = self.window.as_ref() {
+                 w.set_title(&format!(
+-                    "{} · {:.2} ms/frame ({:.1}x headroom) · native {share:.0}%",
++                    "{} Â· {:.2} ms/frame ({:.1}x headroom) Â· native {share:.0}%",
+                     self.title,
+                     self.emu_ema_ms,
+                     16.7 / self.emu_ema_ms.max(0.01),
+@@ -419,7 +441,7 @@ impl PlayApp {
+         }
+ 
+         // Audio defect surfacing: ring drops and underrun holds are silent
+-        // corruption — say so, with numbers, per the product bar.
++        // corruption â€” say so, with numbers, per the product bar.
+         if self.frames_run % 300 == 0 {
+             let (d, h, c) = {
+                 let mut st = self.streams.lock().unwrap();
+@@ -435,7 +457,7 @@ impl PlayApp {
+                 );
+             }
+             // Soft-knee engagement is canon clipping handled better, not a
+-            // defect — visible only in developer stats.
++            // defect â€” visible only in developer stats.
+             if self.show_stats && c > 0 {
+                 eprintln!("audio: soft clip engaged on {c} sample pairs in the last 5 s");
+             }
+@@ -457,7 +479,7 @@ impl PlayApp {
+ 
+     /// Hand this frame's audio taps to the consumer rings, refresh the routing
+     /// snapshot, and count anything dropped. With no consumer, the taps are
+-    /// discarded (not a defect — reported when the device died) so the rings
++    /// discarded (not a defect â€” reported when the device died) so the rings
+     /// can't overflow into permanent DEGRADED spam.
+     fn handoff_audio(&mut self) {
+         let bus = &mut self.machine.bus;
+@@ -496,7 +518,7 @@ impl PlayApp {
+         }
+         bus.psg_tap.clear();
+         // MP2K/engine HLE stream and liveness. A pause is a diagnostic event
+-        // (the crossfade keeps it inaudible) — say so, with the reason, but
++        // (the crossfade keeps it inaudible) â€” say so, with the reason, but
+         // don't let a hopeless variant spam the log forever.
+         let live = bus.mp2k.as_deref().is_some_and(|h| h.live())
+             || bus.gax.as_deref().is_some_and(|g| g.live())
+@@ -517,7 +539,7 @@ impl PlayApp {
+                 eprintln!("DEGRADED: engine HLE paused again: {msg} (further pauses unlogged)");
+             }
+         }
+-        // Feed the HLE ring only while live — an unproven stream must neither
++        // Feed the HLE ring only while live â€” an unproven stream must neither
+         // pile up (drop spam) nor leave stale audio for the switchover.
+         if live {
+             for pair in bus.hle_tap.chunks_exact(2) {
+@@ -552,7 +574,7 @@ impl PlayApp {
+     }
+ 
+     /// The audio-device watchdog (runs on the outer tick, not the production
+-    /// loop — a dead consumer leaves the ring full and the production loop
++    /// loop â€” a dead consumer leaves the ring full and the production loop
+     /// never executes, which is exactly the case this must catch).
+     fn audio_watchdog(&mut self) {
+         if self.stream.is_some() && self.audio_watch.elapsed().as_secs() >= 1 {
+@@ -569,7 +591,7 @@ impl PlayApp {
+             self.audio_consumed_last = consumed;
+             if dead || self.audio_stalls >= 2 {
+                 eprintln!(
+-                    "DEGRADED: audio device {} — wall-clock pacing, retrying every 5 s",
++                    "DEGRADED: audio device {} â€” wall-clock pacing, retrying every 5 s",
+                     if dead { "errored" } else { "stopped consuming" }
+                 );
+                 self.stream = None;
+@@ -614,9 +636,12 @@ impl ApplicationHandler for PlayApp {
+         // Self-paced: poll continuously and produce frames as the audio ring
+         // needs them. Never Wait (would block the emulator on an OS event).
+         event_loop.set_control_flow(ControlFlow::Poll);
++        let source = if self.wide_video.is_some() { wide_video::SIZE } else { (240, 160) };
++        let sizing = if self.wide_video.is_some() { (960.0, 540.0) } else { (720.0, 480.0) };
+         let attrs = Window::default_attributes()
+             .with_title(self.title.clone())
+-            .with_inner_size(LogicalSize::new(240.0 * 3.0, 160.0 * 3.0))
++            .with_inner_size(LogicalSize::new(sizing.0, sizing.1))
++            .with_fullscreen(self.wide_video.as_ref().map(|_| Fullscreen::Borderless(None)))
+             .with_resizable(true);
+         let window = match event_loop.create_window(attrs) {
+             Ok(w) => Arc::new(w),
+@@ -628,8 +653,8 @@ impl ApplicationHandler for PlayApp {
+         };
+         self.presenter = match screen::present::Presenter::new(
+             window.clone(),
+-            240,
+-            160,
++            source.0,
++            source.1,
+             self.display_target,
+             self.av.video_vsync,
+         ) {
+@@ -665,8 +690,8 @@ impl ApplicationHandler for PlayApp {
+                 ElementState::Pressed => {
+                     self.held.insert(code);
+                     // F11 toggles fullscreen (the OS's own fullscreen
+-                    // affordance — macOS green button, Linux/Windows compositor
+-                    // — also works under winit). Act on the initial press, not
++                    // affordance â€” macOS green button, Linux/Windows compositor
++                    // â€” also works under winit). Act on the initial press, not
+                     // auto-repeat.
+                     if code == KeyCode::F11 && !repeat {
+                         if let Some(w) = self.window.as_ref() {
+@@ -711,7 +736,7 @@ impl ApplicationHandler for PlayApp {
+         let (mut keys, nav) = self.gather_input();
+ 
+         // Drop any button from the suppression mask once observed released
+-        // (active-low bit set → cleared from `!keys`), then force the buttons
++        // (active-low bit set â†’ cleared from `!keys`), then force the buttons
+         // still held over from a menu interaction to read as released.
+         self.suppress &= !keys;
+         keys |= self.suppress;
+@@ -730,7 +755,7 @@ impl ApplicationHandler for PlayApp {
+                 self.menu.reset();
+             }
+             reset_audio_counters(&self.streams);
+-            // A toggle press is fully consumed here — while paused, fall
++            // A toggle press is fully consumed here â€” while paused, fall
+             // through to the overlay redraw; the same press must not also be
+             // fed to the menu as a Cancel.
+             if !self.paused {
+@@ -817,7 +842,9 @@ impl ApplicationHandler for PlayApp {
+             // paused) so the overlay's darkening never compounds across
+             // redraws.
+             self.temporal.compose(&self.lut, &mut self.rgba);
+-            self.menu.draw(&self.av, &mut self.rgba, 240, 160);
++            if self.wide_video.is_none() {
++                self.menu.draw(&self.av, &mut self.rgba, 240, 160);
++            }
+             self.present_rgba();
+             std::thread::sleep(Duration::from_millis(16));
+             return;
+@@ -834,7 +861,7 @@ impl ApplicationHandler for PlayApp {
+         }
+ 
+         // Audio-clock pacing: the device callback consumes at a fixed rate, so
+-        // run exactly as many frames as the ring needs — production follows
++        // run exactly as many frames as the ring needs â€” production follows
+         // consumption, immune to display refresh rate (ProMotion) and window-
+         // server throttling. Without a device, wall-clock pace at the hardware
+         // frame rate (handled below).
+@@ -842,7 +869,7 @@ impl ApplicationHandler for PlayApp {
+         while ran < 4 {
+             if self.stream.is_some() {
+                 // Both rings are live (the menu can crossfade between them), so
+-                // pace on the emptier one — neither faithful nor enhanced may
++                // pace on the emptier one â€” neither faithful nor enhanced may
+                 // be allowed to starve.
+                 let fill = {
+                     let st = self.streams.lock().unwrap();
+@@ -984,7 +1011,7 @@ pub fn cmd_play(args: &[String]) -> Result<(), String> {
+         if sha != m.rom_sha256 {
+             return Err(format!(
+                 "this package plays exactly one cartridge image \
+-(sha256 {}…); {rom_path} hashes to {}…",
++(sha256 {}â€¦); {rom_path} hashes to {}â€¦",
+                 &m.rom_sha256[..16],
+                 &sha[..16]
+             ));
+@@ -1027,18 +1054,18 @@ pub fn cmd_play(args: &[String]) -> Result<(), String> {
+         if let Some(m) = &manifest {
+             if sha != m.bios_sha256 {
+                 return Err(format!(
+-                    "this package requires the pinned BIOS (sha256 {}…); the installed \
+-image hashes to {}…",
++                    "this package requires the pinned BIOS (sha256 {}â€¦); the installed \
++image hashes to {}â€¦",
+                     &m.bios_sha256[..16],
+                     &sha[..16]
+                 ));
+             }
+         } else if sha != input_config::BIOS_SHA256 {
+-            eprintln!("bios: image is not the canonical dump (sha256 {sha}) — trying it as-is");
++            eprintln!("bios: image is not the canonical dump (sha256 {sha}) â€” trying it as-is");
+         }
+     } else if let Some(m) = &manifest {
+         return Err(format!(
+-            "this package requires a BIOS image (sha256 {}…) and none is installed.\n\
++            "this package requires a BIOS image (sha256 {}â€¦) and none is installed.\n\
+ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+             &m.bios_sha256[..16],
+             m.dir.display()
+@@ -1046,7 +1073,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+     }
+ 
+     // Native translation. Packaged: the prebuilt library ships in the package
+-    // — under interpreter=false (a *full recomp*) failing to load it is fatal,
++    // â€” under interpreter=false (a *full recomp*) failing to load it is fatal,
+     // and so is any dispatch miss later. Developer path: per-user cache, built
+     // on first launch. The product bar is full speed at full accuracy.
+     let native = if let Some(m) = &manifest {
+@@ -1140,7 +1167,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+             let name = &icfg.keys[b.index()];
+             let key = winit_key(name).unwrap_or_else(|| {
+                 eprintln!(
+-                    "input.cfg: unknown key {name:?} for {} — using default",
++                    "input.cfg: unknown key {name:?} for {} â€” using default",
+                     b.name()
+                 );
+                 winit_key(&defaults.keys[b.index()]).unwrap()
+@@ -1160,21 +1187,21 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+     // screen objects derived from it rebuild in place on a change.
+     let screen_kind = screen::ScreenKind::by_name(&av.screen).unwrap_or_else(|| {
+         eprintln!(
+-            "av.cfg: unknown video.screen {:?} — using frontlit",
++            "av.cfg: unknown video.screen {:?} â€” using frontlit",
+             av.screen
+         );
+         screen::ScreenKind::Frontlit
+     });
+     let display_target = screen::DisplayTarget::by_name(&av.display_gamut).unwrap_or_else(|| {
+         eprintln!(
+-            "av.cfg: unknown video.gamut {:?} — using auto",
++            "av.cfg: unknown video.gamut {:?} â€” using auto",
+             av.display_gamut
+         );
+         screen::DisplayTarget::Auto
+     });
+     // Resolve the LUT's target primaries from the configured gamut plus OS
+     // detection (a wide-gamut panel the compositor isn't managing resolves to
+-    // the panel's own primaries — see screen::display). EDID is sysfs and the
++    // the panel's own primaries â€” see screen::display). EDID is sysfs and the
+     // probe opens its own Wayland connection, so this needs no window.
+     let lut_primaries = screen::display::resolve(display_target);
+     let lut = screen::ColorLut::build(&screen::ColorSettings {
+@@ -1186,7 +1213,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+     });
+     let response = screen::ResponseMode::by_name(&av.response).unwrap_or_else(|| {
+         eprintln!(
+-            "av.cfg: unknown video.response {:?} — using smart",
++            "av.cfg: unknown video.response {:?} â€” using smart",
+             av.response
+         );
+         screen::ResponseMode::Smart
+@@ -1229,6 +1256,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+         temporal,
+         grid_params,
+         rgba: vec![[0u8; 4]; 240 * 160],
++        wide_video: wide_video::WideVideo::configured(),
+         title,
+         status,
+         window: None,
+@@ -1258,7 +1286,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+     };
+ 
+     // Teardown (final save, fallback census, label recording) runs in the
+-    // app's `exiting` callback — winit's guaranteed last hook — so it fires on
++    // app's `exiting` callback â€” winit's guaranteed last hook â€” so it fires on
+     // a clean window close regardless of whether `run_app` returns. Anything
+     // it raised surfaces through `app.error`.
+     let event_loop = EventLoop::new().map_err(|e| format!("event loop: {e}"))?;
+diff --git a/crates/recomp/src/play/wide_video.rs b/crates/recomp/src/play/wide_video.rs
+new file mode 100644
+index 0000000..994d320
+--- /dev/null
++++ b/crates/recomp/src/play/wide_video.rs
+@@ -0,0 +1,174 @@
++use gba_core::Machine;
++
++pub(crate) const SIZE: (u32, u32) = (1920, 1080);
++
++type Render = unsafe extern "C" fn(
++    vram: *const u8,
++    oam: *const u8,
++    palette: *const u8,
++    io: *const u8,
++    backdrop: *const u16,
++    mode: u32,
++    pixels: *mut [u8; 4],
++) -> u32;
++
++pub(crate) struct WideVideo {
++    render: Render,
++    _library: libloading::Library,
++    pub(crate) pixels: Vec<[u8; 4]>,
++    active: bool,
++    last_serial: u32,
++    frame_count: u64,
++    pass_count: u64,
++    diagnostic: bool,
++    pause_layer: Vec<[u8; 4]>,
++    menu_x: [usize; 1620],
++    menu_y: [usize; 1080],
++}
++
++impl WideVideo {
++    pub(crate) fn configured() -> Option<Self> {
++        let path = std::env::var_os("VRALLY3_HD_RENDERER")?;
++        // The launcher supplies the same game-local library used by the CPU
++        // translation. Keeping a handle alive keeps the C render symbol valid.
++        let result = unsafe {
++            libloading::Library::new(&path).and_then(|library| {
++                let render = *library.get::<Render>(b"vrally3_render_frame\0")?;
++                Ok((library, render))
++            })
++        };
++        match result {
++            Ok((_library, render)) => Some(Self {
++                render,
++                _library,
++                pixels: vec![[0, 0, 0, 255]; (SIZE.0 * SIZE.1) as usize],
++                active: false,
++                last_serial: 0,
++                frame_count: 0,
++                pass_count: 0,
++                diagnostic: std::env::var_os("VRALLY3_VIDEO_LOG").is_some(),
++                pause_layer: Vec::new(),
++                menu_x: std::array::from_fn(|x| (2 * x + 1) * 240 / 3240),
++                menu_y: std::array::from_fn(|y| (2 * y + 1) * 160 / 2160),
++            }),
++            Err(e) => {
++                eprintln!("V3D: could not load wide video renderer: {e}");
++                None
++            }
++        }
++    }
++
++    pub(crate) fn render(&mut self, machine: &Machine) -> bool {
++        let m = &machine.bus;
++        // The game runtime owns all the input buffers. The render call reads
++        // these slices synchronously and writes exactly SIZE.0 * SIZE.1 pixels.
++        let serial = unsafe {
++            (self.render)(
++                m.vram.as_ptr(),
++                m.oam.as_ptr(),
++                m.palette.as_ptr(),
++                m.io.as_ptr(),
++                m.frame_backdrop.as_ptr(),
++                u32::from(m.frame_display_control),
++                self.pixels.as_mut_ptr(),
++            )
++        };
++        if serial == 0 {
++            if self.active {
++                eprintln!("V3D: 16:9 bitmap layout");
++            }
++            self.active = false;
++            return false;
++        }
++        if !self.active {
++            self.active = true;
++            eprintln!("V3D: live 1920x1080, 16:9");
++        }
++        self.frame_count += 1;
++        if serial != self.last_serial {
++            self.pass_count += 1;
++            self.last_serial = serial;
++        }
++        if self.diagnostic && self.frame_count % 120 == 0 {
++            eprintln!("V3D: {} frames displayed, {} scene updates", self.frame_count, self.pass_count);
++        }
++        true
++    }
++
++    // Place the outer groups at the sides and insert the extra space in two
++    // background gutters. For artwork without a clear gutter, extend its edge.
++    fn gutter(rgba: &[[u8; 4]], right: bool) -> usize {
++        let mut best = if right { 240 } else { 0 };
++        let mut best_score = 10_000;
++        for margin in 5usize..58 {
++            let x = if right { 240 - margin } else { margin };
++            let mut cost = 0;
++            for row in rgba.chunks_exact(240) {
++                let mut peak = 0;
++                for i in x-3..x+3 {
++                    for c in 0..3 {
++                        peak = peak.max(row[i-1][c].abs_diff(row[i][c]) as usize);
++                    }
++                }
++                cost += peak * peak.min(32);
++                if cost >= best_score { break; }
++            }
++            // Keep small margin changes in textured art from moving buttons.
++            cost += (margin.abs_diff(25)) * 5;
++            if cost < best_score {
++                best = x;
++                best_score = cost;
++            }
++        }
++        best
++    }
++
++    pub(crate) fn layout_2d(&mut self, rgba: &[[u8; 4]]) {
++        let left = Self::gutter(rgba, false);
++        let right = Self::gutter(rgba, true);
++        let left_hd = self.menu_x.partition_point(|&x| x < left);
++        let right_hd = self.menu_x.partition_point(|&x| x < right);
++        for (y, row) in self.pixels.chunks_exact_mut(SIZE.0 as usize).enumerate() {
++            let source = &rgba[self.menu_y[y] * 240..][..240];
++            for (start, end, offset) in [(0, left_hd, 0), (left_hd, right_hd, 150),
++                                         (right_hd, 1620, 300)] {
++                for (dst, &x) in row[start+offset..end+offset].iter_mut().zip(&self.menu_x[start..end]) {
++                    *dst = source[x];
++                }
++            }
++            for (split, start) in [(left, left_hd), (right, right_hd + 150)] {
++                let a = source[split.saturating_sub(1)];
++                let b = source[split.min(239)];
++                if a == b {
++                    row[start..start+150].fill(a);
++                } else {
++                    for (i, pixel) in row[start..start+150].iter_mut().enumerate() {
++                        *pixel = std::array::from_fn(|c|
++                            ((a[c] as usize * (150-i) + b[c] as usize * i) / 150) as u8);
++                    }
++                }
++            }
++        }
++    }
++
++    pub(crate) fn draw_pause(&mut self, menu: &menu::Menu, av: &input_config::AvConfig) {
++        self.pause_layer.resize(240 * 160, [0; 4]);
++        self.pause_layer.fill([0; 4]);
++        menu.draw(av, &mut self.pause_layer, 240, 160);
++        for (y, row) in self.pixels.chunks_exact_mut(SIZE.0 as usize).enumerate() {
++            let overlay = &self.pause_layer[self.menu_y[y] * 240..][..240];
++            for (x, pixel) in row.iter_mut().enumerate() {
++                if (150..1770).contains(&x) {
++                    let ink = overlay[self.menu_x[x-150]];
++                    if ink[3] != 0 {
++                        *pixel = ink;
++                        continue;
++                    }
++                }
++                for channel in &mut pixel[..3] {
++                    *channel = (*channel as u16 * 5 / 16) as u8;
++                }
++            }
++        }
++    }
++}

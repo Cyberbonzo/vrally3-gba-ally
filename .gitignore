@@ -1,0 +1,26 @@
+# Só os fontes e os documentos da adaptação são distribuídos.
+*
+!.gitignore
+!README.md
+!VALIDACAO.md
+!jogar.sh
+!project/
+!project/gatilhos.py
+!project/v3d/
+!project/v3d/ampliar-compilacao.py
+!project/v3d/arm-aot.h
+!project/v3d/instrumentar.py
+!project/v3d/juntar-traducao.c
+!project/v3d/mapear-overlays.py
+!project/v3d/montar-video.py
+!project/v3d/render-v3d.c
+!project/v3d/trace.c
+!project/v3d/runtime-1080p.patch
+!project/v3d/video-ao-vivo.c
+!config/
+!config/gba-recomp/
+!config/gba-recomp/input.cfg
+!config/gba-recomp/av.cfg
+!upstream-licenses/
+!upstream-licenses/LICENSE-MIT
+!upstream-licenses/LICENSE-APACHE
