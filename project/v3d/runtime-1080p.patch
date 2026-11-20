@@ -722,7 +722,7 @@ index 9b511e5..e97dd95 100644
          // source amplitude.
          let mut f = FifoInterp::new(48000.0);
 diff --git a/crates/recomp/src/play.rs b/crates/recomp/src/play.rs
-index 32db16d..6d8895f 100644
+index 32db16d..1a86439 100644
 --- a/crates/recomp/src/play.rs
 +++ b/crates/recomp/src/play.rs
 @@ -3,14 +3,14 @@
@@ -1065,7 +1065,7 @@ index 32db16d..6d8895f 100644
          // consumption, immune to display refresh rate (ProMotion) and window-
          // server throttling. Without a device, wall-clock pace at the hardware
          // frame rate (handled below).
-@@ -842,7 +869,7 @@ impl ApplicationHandler for PlayApp {
+@@ -842,12 +869,17 @@ impl ApplicationHandler for PlayApp {
          while ran < 4 {
              if self.stream.is_some() {
                  // Both rings are live (the menu can crossfade between them), so
@@ -1074,7 +1074,17 @@ index 32db16d..6d8895f 100644
                  // be allowed to starve.
                  let fill = {
                      let st = self.streams.lock().unwrap();
-@@ -984,7 +1011,7 @@ pub fn cmd_play(args: &[String]) -> Result<(), String> {
+                     (st.mixed.len() / 2).min(st.psg.len() / 2)
+                 };
++                // In HD, present each produced frame while the audio ring has
++                // headroom. Catch up in batches after a real shortfall.
++                if self.wide_video.is_some() && self.primed && ran > 0 && fill >= RING_TARGET / 2 {
++                    break;
++                }
+                 if fill >= RING_TARGET {
+                     break;
+                 }
+@@ -984,7 +1016,7 @@ pub fn cmd_play(args: &[String]) -> Result<(), String> {
          if sha != m.rom_sha256 {
              return Err(format!(
                  "this package plays exactly one cartridge image \
@@ -1083,7 +1093,7 @@ index 32db16d..6d8895f 100644
                  &m.rom_sha256[..16],
                  &sha[..16]
              ));
-@@ -1027,18 +1054,18 @@ pub fn cmd_play(args: &[String]) -> Result<(), String> {
+@@ -1027,18 +1059,18 @@ pub fn cmd_play(args: &[String]) -> Result<(), String> {
          if let Some(m) = &manifest {
              if sha != m.bios_sha256 {
                  return Err(format!(
@@ -1106,7 +1116,7 @@ index 32db16d..6d8895f 100644
  Place your own dump as gba_bios.bin next to the executable:\n  {}",
              &m.bios_sha256[..16],
              m.dir.display()
-@@ -1046,7 +1073,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+@@ -1046,7 +1078,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
      }
  
      // Native translation. Packaged: the prebuilt library ships in the package
@@ -1115,7 +1125,7 @@ index 32db16d..6d8895f 100644
      // and so is any dispatch miss later. Developer path: per-user cache, built
      // on first launch. The product bar is full speed at full accuracy.
      let native = if let Some(m) = &manifest {
-@@ -1140,7 +1167,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+@@ -1140,7 +1172,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
              let name = &icfg.keys[b.index()];
              let key = winit_key(name).unwrap_or_else(|| {
                  eprintln!(
@@ -1124,7 +1134,7 @@ index 32db16d..6d8895f 100644
                      b.name()
                  );
                  winit_key(&defaults.keys[b.index()]).unwrap()
-@@ -1160,21 +1187,21 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+@@ -1160,21 +1192,21 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
      // screen objects derived from it rebuild in place on a change.
      let screen_kind = screen::ScreenKind::by_name(&av.screen).unwrap_or_else(|| {
          eprintln!(
@@ -1149,7 +1159,7 @@ index 32db16d..6d8895f 100644
      // probe opens its own Wayland connection, so this needs no window.
      let lut_primaries = screen::display::resolve(display_target);
      let lut = screen::ColorLut::build(&screen::ColorSettings {
-@@ -1186,7 +1213,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+@@ -1186,7 +1218,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
      });
      let response = screen::ResponseMode::by_name(&av.response).unwrap_or_else(|| {
          eprintln!(
@@ -1158,7 +1168,7 @@ index 32db16d..6d8895f 100644
              av.response
          );
          screen::ResponseMode::Smart
-@@ -1229,6 +1256,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+@@ -1229,6 +1261,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
          temporal,
          grid_params,
          rgba: vec![[0u8; 4]; 240 * 160],
@@ -1166,7 +1176,7 @@ index 32db16d..6d8895f 100644
          title,
          status,
          window: None,
-@@ -1258,7 +1286,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
+@@ -1258,7 +1291,7 @@ Place your own dump as gba_bios.bin next to the executable:\n  {}",
      };
  
      // Teardown (final save, fallback census, label recording) runs in the

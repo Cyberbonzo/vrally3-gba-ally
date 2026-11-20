@@ -2,10 +2,13 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <stdlib.h>
+
+#include "mipmap.h"
 
 enum { words = 49, max_vertices = 9 };
 typedef struct { double y, x, u, v; } Vertex;
-typedef struct { double x, u, v; } Intersection;
+typedef struct { double x, u, v, dxdy, dudy, dvdy; } Intersection;
 typedef struct { const uint8_t *ewram, *iwram; } Memory;
 
 static const uint8_t *texture_base(Memory memory, uint32_t address, uint32_t *mask)
@@ -21,7 +24,11 @@ static int edge(const Vertex *a, const Vertex *b, double y, Intersection *at)
 {
     if (!((a->y <= y && y < b->y) || (b->y <= y && y < a->y)))
         return 0;
+    const double inv = 1.0 / (b->y - a->y);
     const double t = (y - a->y) / (b->y - a->y);
+    at->dxdy = (b->x - a->x) * inv;
+    at->dudy = (b->u - a->u) * inv;
+    at->dvdy = (b->v - a->v) * inv;
     at->x = a->x + (b->x - a->x) * t;
     at->u = a->u + (b->u - a->u) * t;
     at->v = a->v + (b->v - a->v) * t;
@@ -35,7 +42,7 @@ static int clipped_start(double position, int max)
 }
 
 static void polygon(uint8_t *out, int width, int height, const int32_t *command,
-                    Memory memory, double offset_x, double scale_x, double scale_y)
+                    Memory memory, double offset_x, double scale_x, double scale_y, int filter)
 {
     const int solid = command[2] == 1;
     const unsigned count = (unsigned)command[5];
@@ -60,9 +67,10 @@ static void polygon(uint8_t *out, int width, int height, const int32_t *command,
     if (!solid && !texture)
         return;
 
+    const int eligible = filter && !solid && (address & 0xffff) == 0 && address >> 24 == 2;
     const int first = clipped_start(lo, height), last = clipped_start(hi, height);
     for (int y = first; y < last; ++y) {
-        Intersection left = {INFINITY, 0, 0}, right = {-INFINITY, 0, 0};
+        Intersection left = {.x = INFINITY}, right = {.x = -INFINITY};
         for (unsigned i = 0; i < count; ++i) {
             Intersection at;
             const unsigned next = (i + 1 == count) ? 0 : i + 1;
@@ -80,6 +88,29 @@ static void polygon(uint8_t *out, int width, int height, const int32_t *command,
             continue;
         }
         const double reciprocal = 1.0 / (right.x - left.x);
+        if (eligible && x0 < x1) {
+            const double dudx = (right.u - left.u) * reciprocal;
+            const double dvdx = (right.v - left.v) * reciprocal;
+            const double dxdy = 0.5 * (right.dxdy + left.dxdy);
+            const double dudy = 0.5 * (right.dudy + left.dudy) - dudx * dxdy;
+            const double dvdy = 0.5 * (right.dvdy + left.dvdy) - dvdx * dxdy;
+            // A two-output-pixel footprint starts the transition before distant
+            // texels skip across pixels as the original camera advances.
+            MipSpan span;
+            if (mip_span(&span, address, memory.ewram,
+                         2 * fmax(fabs(dudx), fabs(dudy)),
+                         2 * fmax(fabs(dvdx), fabs(dvdy)))) {
+                for (int x = x0; x < x1; ++x) {
+                    const double t = (x + 0.5 - left.x) * reciprocal;
+                    const unsigned u = (unsigned)(int)floor(left.u + (right.u - left.u) * t) & 255;
+                    const unsigned v = (unsigned)(int)floor(left.v + (right.v - left.v) * t) & 255;
+                    const unsigned raw = texture[(address + 256 * u + v) & mask];
+                    row[x] = raw ? mip_blend(mip_texel(span.low, u, v),
+                                             mip_texel(span.high, u, v), span.weight) : 0;
+                }
+                continue;
+            }
+        }
         for (int x = x0; x < x1; ++x) {
             const double t = (x + 0.5 - left.x) * reciprocal;
             const unsigned u = (unsigned)(int)floor(left.u + (right.u - left.u) * t) & 255;
@@ -126,12 +157,13 @@ static void sprite(uint8_t *out, int width, int height, const int32_t *command,
     }
 }
 
-int v3d_draw(uint8_t *out, int width, int height, const int32_t *commands,
-             unsigned count, const uint8_t *ewram, const uint8_t *iwram, int wide)
+int v3d_draw_filtered(uint8_t *out, int width, int height, const int32_t *commands,
+             unsigned count, const uint8_t *ewram, const uint8_t *iwram, int wide, const uint16_t *palette)
 {
     if (!out || !commands || !ewram || !iwram || width < 1 || width > 4096 ||
         height < 1 || height > 4096 || count > 4096)
         return 0;
+    if (palette) mip_begin(palette);
     const double sy = height / 160.0;
     const double sx = wide ? width / 240.0 : sy;
     const double offset = (width - 240 * sx) / 2;
@@ -140,10 +172,15 @@ int v3d_draw(uint8_t *out, int width, int height, const int32_t *commands,
     for (unsigned i = 0; i < count; ++i) {
         const int32_t *q = commands + i * words;
         if (q[2] == 1 || q[2] == 3)
-            polygon(out, width, height, q, memory, offset, sx, sy);
+            polygon(out, width, height, q, memory, offset, sx, sy, palette != NULL);
         else if (q[2] == 4)
             sprite(out, width, height, q, memory, offset, sx, sy, wide == 1);
     }
     return 1;
 }
 
+int v3d_draw(uint8_t *out, int width, int height, const int32_t *commands,
+             unsigned count, const uint8_t *ewram, const uint8_t *iwram, int wide)
+{
+    return v3d_draw_filtered(out, width, height, commands, count, ewram, iwram, wide, NULL);
+}

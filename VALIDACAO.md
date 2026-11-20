@@ -24,4 +24,14 @@ O terreno e os objetos 3D usam 1920×1080. A arte de bitmap mantém a resoluçã
 
 A cobertura não inclui uma chegada em todas as 52 configurações de pista e sentido, cada combinação de carro e clima, nem multiplayer por cabo Link.
 
-SHA-256 do módulo de vídeo testado e instalado: `43ad6ed981c8bc4177b5c5533041caa428850fc1cd5ffb03408441fa421b112d`.
+SHA-256 do módulo de vídeo usado na revisão das árvores e do horizonte: `43ad6ed981c8bc4177b5c5533041caa428850fc1cd5ffb03408441fa421b112d`.
+
+## Filtro de pista e cadência de apresentação
+
+Na mesma curva da Suécia, comparei 90 amostras com os mesmos comandos e números de quadro do jogo. Em um recorte da pista de 470×73 pixels, a diferença média de luminância entre amostras consecutivas passou de 19,62 para 18,82 na escala de 0 a 255. A medição inclui o movimento da câmera. A comparação visual original está na pasta privada de logs.
+
+Em 60 medições do mesmo passe, a mediana do tempo de rasterização foi de 3,66 ms com o filtro desligado e 4,28 ms com ele ligado. A revisão do compositor reduziu sua mediana de 11,75 ms para 6,56 ms no replay da Suécia. A verificação comparou os 90 quadros reduzidos dessa passagem e 38 quadros completos de 1080p em seis provas, cobrindo corrida, pausa e retomada. A saída do compositor otimizado coincidiu com a do compositor anterior usando o mesmo filtro.
+
+Na corrida aberta pela Steam, a janela ocupou 1920×1080 no painel do Ally. O runtime registrou 2.400 apresentações em 40,17 s, com média de 59,74 FPS. Nos intervalos de 120 apresentações, a taxa variou de 59,37 a 60,09 FPS. O motor do GBA atualizou a cena 800 vezes nesse período.
+
+O módulo de vídeo instalado tem SHA-256 `38cf5317454ff0927e2e841191a7f66b4679b761f25109a6031e212a5572ed4d`.

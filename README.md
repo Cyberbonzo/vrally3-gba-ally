@@ -19,3 +19,9 @@ O kit contém o código do vídeo, o remapeamento, as ferramentas de especializa
 O painel do Ally foi testado em 1080p. A apresentação acompanha a saída de 60 Hz. A lógica e a animação mantêm a cadência do GBA. A saída para monitor externo está configurada em 1080p e aguarda um teste físico.
 
 [Resultados da revisão de vídeo](VALIDACAO.md)
+
+## Filtro de pista
+
+A filtragem de distância vem ativada. O renderizador escolhe a redução em cada eixo da textura conforme o tamanho que ela ocupa na tela. A amostragem permanece original nas superfícies vistas de perto. O filtro atua nos polígonos texturizados do cenário. A carroceria em bitmap, os sprites, os textos e o painel conservam sua arte.
+
+Para comparar o mesmo trecho com o filtro desligado, execute `VRALLY3_TERRAIN_FILTER=0 ./jogar.sh` a partir da pasta do jogo. A abertura normal pela Steam volta a usar o filtro.

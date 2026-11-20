@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 enum { width = 1920, height = 1080, sw = 240, sh = 160, max_commands = 4096, words = 49 };
@@ -11,8 +12,8 @@ typedef struct {
     uint32_t (*read32)(void *, uint32_t);
 } Runtime;
 
-int v3d_draw(uint8_t *, int, int, const int32_t *, unsigned,
-             const uint8_t *, const uint8_t *, int);
+int v3d_draw_filtered(uint8_t *, int, int, const int32_t *, unsigned,
+             const uint8_t *, const uint8_t *, int, const uint16_t *);
 
 typedef struct {
     uint8_t ground[width * height];
@@ -25,7 +26,7 @@ static int32_t commands[max_commands][words];
 static unsigned command_count, serial;
 int v3d_race_projection;
 static uint8_t ewram[0x40000], iwram[0x8000];
-static int16_t source_x[width], source_y[height];
+static int16_t source_x[width], source_y[height], guest_edge[sw + 1], next_column[width];
 static uint8_t edited[sw * sh];
 static uint32_t rgba_lut[32768];
 static int initialized;
@@ -93,7 +94,16 @@ void v3d_trace(const void *runtime, void *m, uint32_t address)
         read_memory(api, m, ewram, 0x02000000, sizeof(ewram));
         read_memory(api, m, iwram, 0x03000000, sizeof(iwram));
         read_memory(api, m, page->original, target, sizeof(page->original));
-        v3d_draw(page->ground, width, height, &commands[0][0], count, ewram, iwram, 2);
+        static int filter = -1;
+        if (filter < 0) {
+            const char *setting = getenv("VRALLY3_TERRAIN_FILTER");
+            filter = !setting || strcmp(setting, "0") != 0;
+        }
+        uint16_t palette[256];
+        if (filter)
+            read_memory(api, m, (uint8_t *)palette, 0x05000000, sizeof(palette));
+        v3d_draw_filtered(page->ground, width, height, &commands[0][0], count,
+                          ewram, iwram, 2, filter ? palette : NULL);
         page->serial = ++serial;
     }
 }
@@ -119,7 +129,7 @@ static int clip(double pos, int max)
     return value < 0 ? 0 : (value > max ? max : value);
 }
 
-static void draw_objects(uint16_t *image, const uint8_t *ground, const uint8_t *display,
+static void draw_objects(uint8_t *rgba, const uint8_t *ground, const uint8_t *display,
                          const uint8_t *vram, const uint8_t *oam, const uint8_t *pal,
                          const uint8_t *io, const uint16_t *backdrop, uint16_t mode)
 {
@@ -167,8 +177,10 @@ static void draw_objects(uint16_t *image, const uint8_t *ground, const uint8_t *
             const unsigned row_tiles = mode & 64 ? w / 8 * stride : 32;
             for (int iy = y0; iy < y1; ++iy) {
                 const double ly = (iy + 0.5) / scale - y;
-                for (int ix = x0; ix < x1; ++ix) {
-                    const double lx = (ix + 0.5 - center) / scale - x;
+                for (int ix = x0; ix < x1;) {
+                    const int first = ix;
+                    ix = affine ? ix + 1 : (next_column[ix] < x1 ? next_column[ix] : x1);
+                    const double lx = (first + 0.5 - center) / scale - x;
                     int u = (int)lx, v = (int)ly;
                     if (affine) {
                         const double dx = lx - bw / 2.0, dy = ly - bh / 2.0;
@@ -190,20 +202,28 @@ static void draw_objects(uint16_t *image, const uint8_t *ground, const uint8_t *
                         : (vram[address] >> ((u & 1) * 4)) & 15;
                     if (!index)
                         continue;
-                    const size_t pos = (size_t)iy * width + ix;
-                    const int sx = source_x[ix], sy = source_y[iy];
-                    unsigned bg = ground[pos];
-                    if ((unsigned)sx < sw && edited[sy * sw + sx])
-                        bg = display[sy * sw + sx];
-                    if (bg && (unsigned)rank > bg_rank)
-                        continue;
                     const unsigned pal_index = 256 + index + (eight_bits ? 0 : (a2 >> 12) * 16);
-                    unsigned color = word(pal, pal_index * 2) & 32767;
-                    if (blend && (control & (bg ? 1 << 10 : 1 << 13))) {
-                        const unsigned underneath = bg ? word(pal, bg * 2) : backdrop[sy];
-                        color = color_mixed(color, underneath, ea < 16 ? ea : 16, eb < 16 ? eb : 16);
+                    const unsigned color = word(pal, pal_index * 2) & 32767;
+                    const size_t line = (size_t)iy * width;
+                    if (!blend && (unsigned)rank <= bg_rank) {
+                        const uint32_t pixel = rgba_lut[color];
+                        for (int px = first; px < ix; ++px)
+                            memcpy(rgba + 4 * (line + px), &pixel, 4);
+                        continue;
                     }
-                    image[pos] = color;
+                    const int sx = source_x[first], sy = source_y[iy];
+                    const int has_edit = (unsigned)sx < sw && edited[sy * sw + sx];
+                    for (int px = first; px < ix; ++px) {
+                        const size_t pos = line + px;
+                        const unsigned bg = has_edit ? display[sy * sw + sx] : ground[pos];
+                        if (bg && (unsigned)rank > bg_rank) continue;
+                        unsigned result = color;
+                        if (blend && (control & (bg ? 1 << 10 : 1 << 13))) {
+                            const unsigned underneath = bg ? word(pal, bg * 2) : backdrop[sy];
+                            result = color_mixed(color, underneath, ea < 16 ? ea : 16, eb < 16 ? eb : 16);
+                        }
+                        memcpy(rgba + 4 * pos, &rgba_lut[result], 4);
+                    }
                 }
             }
         }
@@ -216,7 +236,6 @@ unsigned vrally3_render_frame(const uint8_t *vram, const uint8_t *oam, const uin
                               const uint8_t *io, const uint16_t *backdrop, unsigned mode,
                               uint8_t *rgba)
 {
-    static uint16_t image[width * height];
     if ((mode & 7) != 4 || (mode & 128) || !(mode & 1024))
         return 0;
     const unsigned visible = (mode >> 4) & 1;
@@ -226,6 +245,14 @@ unsigned vrally3_render_frame(const uint8_t *vram, const uint8_t *oam, const uin
     if (!initialized) {
         for (int x = 0; x < width; ++x)
             source_x[x] = (int)floor((x + 0.5 - width * 0.5) / scale + sw * 0.5);
+        for (int x = width - 1; x >= 0; --x)
+            next_column[x] = (x + 1 < width && source_x[x] == source_x[x + 1])
+                ? next_column[x + 1] : x + 1;
+        int edge = 0;
+        for (int gx = 0; gx <= sw; ++gx) {
+            while (edge < width && source_x[edge] < gx) ++edge;
+            guest_edge[gx] = (int16_t)edge;
+        }
         for (int y = 0; y < height; ++y)
             source_y[y] = (int)floor((y + 0.5) / scale);
         for (unsigned color = 0; color < 32768; ++color) {
@@ -247,27 +274,27 @@ unsigned vrally3_render_frame(const uint8_t *vram, const uint8_t *oam, const uin
     // Returning to a bitmap menu replaces most of a page in one operation.
     if (changed > sizeof(edited) / 2)
         return 0;
-    uint16_t palette[256];
-    for (unsigned i = 0; i < 256; ++i)
-        palette[i] = word(pal, i * 2) & 32767;
+    uint32_t palette[256];
+    for (unsigned i = 1; i < 256; ++i)
+        palette[i] = rgba_lut[word(pal, i * 2) & 32767];
     for (int y = 0; y < height; ++y) {
         const int sy = source_y[y];
-        const uint16_t sky = backdrop[sy] & 32767;
+        palette[0] = rgba_lut[backdrop[sy] & 32767];
+        const uint8_t *src = page->ground + (size_t)y * width;
+        uint8_t *row = rgba + (size_t)y * width * 4;
+        for (int x = 0; x < width; ++x)
+            memcpy(row + 4*x, &palette[src[x]], 4);
         const uint8_t *original_row = display + sy * sw;
         const uint8_t *edit_row = edited + sy * sw;
-        size_t row = (size_t)y * width;
-        for (int x = 0; x < width; ++x) {
-            const int sx = source_x[x];
-            unsigned color = page->ground[row + x];
-            if ((unsigned)sx < sw && edit_row[sx])
-                color = original_row[sx];
-            image[row + x] = color ? palette[color] : sky;
+        for (int sx = 0; sx < sw; ++sx) {
+            if (!edit_row[sx]) continue;
+            const uint32_t color = palette[original_row[sx]];
+            for (int x = guest_edge[sx]; x < guest_edge[sx + 1]; ++x)
+                memcpy(row + 4*x, &color, 4);
         }
     }
     if (mode & 4096)
-        draw_objects(image, page->ground, display, vram, oam, pal, io, backdrop, mode);
-    for (size_t i = 0; i < (size_t)width * height; ++i)
-        memcpy(rgba + 4 * i, &rgba_lut[image[i]], 4);
+        draw_objects(rgba, page->ground, display, vram, oam, pal, io, backdrop, mode);
     return page->serial;
 }
 

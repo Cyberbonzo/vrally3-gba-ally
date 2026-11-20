@@ -13,6 +13,7 @@
 !project/v3d/juntar-traducao.c
 !project/v3d/mapear-overlays.py
 !project/v3d/montar-video.py
+!project/v3d/mipmap.h
 !project/v3d/render-v3d.c
 !project/v3d/trace.c
 !project/v3d/runtime-1080p.patch
